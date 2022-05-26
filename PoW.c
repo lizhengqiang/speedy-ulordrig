@@ -1,3 +1,5 @@
+/* Copyright 2016-2018 The Ulord Core Foundation */
+
 #include "PoW.h"
 
 #include <stdio.h>
@@ -5,7 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
-#include <omp.h>
+// #include <omp.h>
 
 #include "my_time.h"
 #include "common.h"
@@ -14,6 +16,97 @@
 
 // #define SSE_VERSION
 
+void initSpeedyWorkMemory(uint8_t *input, uint32_t inputLen, uint8_t *Maddr, const uint32_t K) {
+	uint32_t i, j;
+	// uint8_t a[OUTPUT_LEN], b[OUTPUT_LEN];
+	// funcInfor[0].func(input, inputLen, a);
+	// printf("len is %d , input is : ",inputLen);
+	// for(int tt=0;tt<T;tt++)printf("%d,",input[tt*inputLen]);
+	// printf("\n");
+	uint8_t a[T*OUTPUT_LEN], b[T*OUTPUT_LEN];
+	
+	for(int tt=0;tt<T;tt++)funcInfor[0].func(&input[tt*inputLen], inputLen, &a[tt*OUTPUT_LEN]);
+	// printf("a is : ");
+	// for(int tt=0;tt<T;tt++)printf("%d,",input[tt*inputLen]);
+	// printf("\n");
+// 	uint64_t randSeed[4] = {0, 0, 0, 0};
+// #ifndef SSE_VERSION
+// 	struct my_rand48_data randBuffer[4];
+// #else
+// 	struct vrand48_data randBuffer[2];
+// #endif
+
+	
+	uint64_t randSeed[T*4] = {0};
+	struct my_rand48_data randBuffer[T*4];
+
+
+	const uint32_t iterNum = WORK_MEMORY_SIZE >> 5;
+	for (i = 0; i < iterNum; ++i) {
+		if (i % K) {
+// #ifndef SSE_VERSION
+// 			uint64_t num = 0;
+// 			for (j = 0; j < 4; ++j) {
+// 				my_rand64_r(&randBuffer[j], &num);
+// 				memcpy(b + (j << 3), (uint8_t *)&num, 8*sizeof(uint8_t));
+// 			}
+// #elsev
+// 			vrand64(b, randBuffer);
+// #endif
+			uint64_t num[T] = {0};
+			for (j = 0; j < 4; ++j) {
+				for(int tt=0;tt<T;tt++)my_rand64_r(&randBuffer[tt*4+j], &num[tt]);
+				// printf("i%Kfor_num:");
+				// for(int tt=0;tt<T;tt++)printf("%d,",num[tt]);
+				// printf("\n");
+				for(int tt=0;tt<T;tt++)memcpy(&b[tt*OUTPUT_LEN] + (j << 3), (uint8_t *)&num[tt], 8*sizeof(uint8_t));
+				//printf("i%Kfor:");
+				//for(int tt=0;tt<T;tt++)printf("%d,",b[tt*OUTPUT_LEN]);
+				//printf("\n");
+			}
+
+			//memcpy(&b[0] + (0 << 3), (uint8_t *)&num[0], T*4*8*sizeof(uint8_t));
+			
+			uint8_t shift_num;
+			uint8_t result[T*OUTPUT_LEN];
+			reduce_bit((uint8_t *)&i, 4, (uint8_t *)&shift_num, 8);
+			for(int tt=0;tt<T;tt++)rrs(&b[tt*OUTPUT_LEN], OUTPUT_LEN, &result[tt*OUTPUT_LEN], shift_num);
+
+			for(int tt=0;tt<T;tt++)memcpy(Maddr + tt*WORK_MEMORY_SIZE + (i << 5), &result[tt*OUTPUT_LEN], OUTPUT_LEN*sizeof(uint8_t));
+			for (j = 0; j < T*32; ++j) {
+				a[j] ^= result[j];
+			}
+		} else {
+			uint8_t t[T] = {0}, shift_num = 0;
+			for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN], 32, (uint8_t *)&t[tt], 8);
+			for(int tt=0;tt<T;tt++)t[tt] = (t[tt] & 0x0f) ^ (t[tt] >> 4);
+			reduce_bit((uint8_t *)&i, 4, (uint8_t *)&shift_num, 8);
+			
+			uint8_t a_rrs[T*INPUT_LEN];
+			for(int tt=0;tt<T;tt++)rrs(&a[tt*OUTPUT_LEN], OUTPUT_LEN, &a_rrs[tt*INPUT_LEN], shift_num);
+			for(int tt=0;tt<T;tt++)funcInfor[t[tt]].func(&a_rrs[tt*INPUT_LEN], 32, &a[tt*OUTPUT_LEN]);
+			
+			// printf("IK0,t is : ");
+			// for(int tt=0;tt<T;tt++)printf("%d,",t[tt]);
+			// printf("\n");
+			
+			for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN],      8, (uint8_t *)&randSeed[tt*4+0], 48);
+			for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN] +  8, 8, (uint8_t *)&randSeed[tt*4+1], 48);
+			for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN] + 16, 8, (uint8_t *)&randSeed[tt*4+2], 48);
+			for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN] + 24, 8, (uint8_t *)&randSeed[tt*4+3], 48);
+#ifndef SSE_VERSION
+			for(int tt=0;tt<T;tt++)my_seed48_r(randSeed[tt*4+0], &randBuffer[tt*4+0]);
+			for(int tt=0;tt<T;tt++)my_seed48_r(randSeed[tt*4+1], &randBuffer[tt*4+1]);
+			for(int tt=0;tt<T;tt++)my_seed48_r(randSeed[tt*4+2], &randBuffer[tt*4+2]);
+			for(int tt=0;tt<T;tt++)my_seed48_r(randSeed[tt*4+3], &randBuffer[tt*4+3]);
+#else
+			vseed48(randSeed    , &randBuffer[0]);
+			vseed48(randSeed + 2, &randBuffer[1]);
+#endif
+			for(int tt=0;tt<T;tt++)memcpy(Maddr + tt*WORK_MEMORY_SIZE + (i << 5), &a[tt*OUTPUT_LEN], 32*sizeof(uint8_t));
+		}
+	}
+}
 /* 
  * Step 1: Initialize working memory.
 */
@@ -80,6 +173,108 @@ void initWorkMemory(uint8_t *input, uint32_t inputLen, uint8_t *Maddr, const uin
 	}
 }
 
+/* 
+ * Step 2: Modify the working memory contents.
+*/
+void modifySpeedyWorkMemory(uint8_t *Maddr, const uint32_t L, const uint32_t C,
+		uint8_t *result) {
+	uint32_t i, j;
+	uint8_t a[T*OUTPUT_LEN], b[T*64];
+	
+	for(int tt=0;tt<T;tt++)funcInfor[0].func(Maddr + tt * WORK_MEMORY_SIZE + WORK_MEMORY_SIZE - 32, 32, &a[tt*OUTPUT_LEN]);
+	for(int tt=0;tt<T;tt++)memcpy(&result[tt*OUTPUT_LEN], &a[tt*OUTPUT_LEN], OUTPUT_LEN*sizeof(uint8_t));
+	
+	uint64_t r[T] = {0};
+	for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN], 32, (uint8_t *)&r[tt], 64);
+	
+	const uint32_t iterNum = L << 6;
+	for (i = 0; i < C; ++i) {
+		// uint64_t randSeed = 0;
+		// reduce_bit(a, 32, (uint8_t *)&randSeed, 48);
+		
+		// struct my_rand48_data randBuffer;
+		// my_seed48_r(randSeed, &randBuffer);
+		
+		// uint8_t t1, t2, s;
+		// uint64_t randNum = 0, base = 0;
+		uint64_t randSeed[T] = {0};
+		for(int tt=0;tt<T;tt++)reduce_bit(&a[tt*OUTPUT_LEN], 32, (uint8_t *)&randSeed[tt], 48);
+		
+		struct my_rand48_data randBuffer[T];
+		for(int tt=0;tt<T;tt++)my_seed48_r(randSeed[tt], &randBuffer[tt]);
+		
+		uint8_t t1[T], t2[T], s[T];
+		uint64_t randNum[T] = {0}, base[T] = {0};
+		for (j = 0; j < iterNum; ++j) {
+			// my_rand48_r(&randBuffer, &randNum);
+			// base = randNum + r;
+			for(int tt=0;tt<T;tt++)my_rand48_r(&randBuffer[tt], &randNum[tt]);
+			for(int tt=0;tt<T;tt++)base[tt] = randNum[tt] + r[tt];
+			
+			// uint64_t offset = 0;
+			// reduce_bit((uint8_t *)&r, 8, (uint8_t *)&offset, 8);
+			// offset = (offset << 8) + 1;
+			uint64_t offset[T] = {0};
+			for(int tt=0;tt<T;tt++)reduce_bit((uint8_t *)&r[tt], 8, (uint8_t *)&offset[tt], 8);
+			for(int tt=0;tt<T;tt++)offset[tt] = (offset[tt] << 8) + 1;
+			
+			// uint64_t addr1 = (base + WORK_MEMORY_SIZE - offset) % WORK_MEMORY_SIZE;
+			// uint64_t addr2 = (base + offset) % WORK_MEMORY_SIZE;
+			uint64_t addr1[T],addr2[T];
+			for(int tt=0;tt<T;tt++)addr1[tt] = (base[tt] + WORK_MEMORY_SIZE - offset[tt]) % WORK_MEMORY_SIZE + tt*WORK_MEMORY_SIZE;
+			for(int tt=0;tt<T;tt++)addr2[tt] = (base[tt] + offset[tt]) % WORK_MEMORY_SIZE + tt*WORK_MEMORY_SIZE;
+			
+			// t1 = Maddr[addr1];
+			// t2 = Maddr[addr2]; 
+			// s = a[j & 0x1f];
+			for(int tt=0;tt<T;tt++)t1[tt] = Maddr[addr1[tt]];
+			for(int tt=0;tt<T;tt++)t2[tt] = Maddr[addr2[tt]]; 
+			for(int tt=0;tt<T;tt++)s[tt] = a[tt*OUTPUT_LEN + (j & 0x1f)];
+			
+			// Maddr[addr1] = t2 ^ s;
+			// Maddr[addr2] = t1 ^ s;
+			// b[j & 0x3f] = t1 ^ t2;
+			for(int tt=0;tt<T;tt++)Maddr[addr1[tt]] = t2[tt] ^ s[tt];
+			for(int tt=0;tt<T;tt++)Maddr[addr2[tt]] = t1[tt] ^ s[tt];
+			for(int tt=0;tt<T;tt++)b[tt*64 + (j & 0x3f)] = t1[tt] ^ t2[tt];
+			
+			// r = r + s + t1 + t2;
+			for(int tt=0;tt<T;tt++)r[tt] = r[tt] + s[tt] + t1[tt] + t2[tt];
+		}
+
+		// uint8_t t = 0;
+		// reduce_bit((uint8_t *)&r, 8, (uint8_t *)&t, 8);
+		// t = (t & 0x0f) ^ (t >> 4);
+		uint8_t t[T] = {0};
+		for(int tt=0;tt<T;tt++)reduce_bit((uint8_t *)&r[tt], 8, (uint8_t *)&t[tt], 8);
+		for(int tt=0;tt<T;tt++)t[tt] = (t[tt] & 0x0f) ^ (t[tt] >> 4);
+		
+		// reduce_bit(b, 64, a, 256);
+		for(int tt=0;tt<T;tt++)reduce_bit(&b[tt*64], 64, &a[tt*OUTPUT_LEN], 256);
+		
+		// uint8_t shift_num = 0;
+		// uint64_t ir = r + i;
+		// reduce_bit((uint8_t *)&ir, 8, (uint8_t *)&shift_num, 8);
+		uint8_t shift_num[T] = {0};
+		uint64_t ir[T];
+		for(int tt=0;tt<T;tt++)ir[tt] = r[tt] + i;
+		for(int tt=0;tt<T;tt++)reduce_bit((uint8_t *)&ir[tt], 8, (uint8_t *)&shift_num[tt], 8);
+
+		// uint8_t a_rrs[INPUT_LEN];
+		// rrs(a, OUTPUT_LEN, a_rrs, shift_num);
+		// funcInfor[t].func(a_rrs, 32, a);
+		uint8_t a_rrs[T*INPUT_LEN];
+		for(int tt=0;tt<T;tt++)rrs(&a[tt*OUTPUT_LEN], OUTPUT_LEN, &a_rrs[tt*INPUT_LEN], shift_num[tt]);
+		for(int tt=0;tt<T;tt++)funcInfor[t[tt]].func(&a_rrs[tt*INPUT_LEN], 32, &a[tt*OUTPUT_LEN]);
+		
+		// for (j = 0; j < OUTPUT_LEN; ++j) {
+		// 	result[j] ^= a[j];
+		// }
+		for (j = 0; j < T*OUTPUT_LEN; ++j) {
+			result[j] ^= a[j];
+		}
+	}
+}
 /* 
  * Step 2: Modify the working memory contents.
 */
@@ -194,6 +389,7 @@ void calculateFinalResult(uint8_t *Maddr, uint8_t *c, const uint32_t D, uint8_t 
 /* 
  * Correctness & Performance test for Proof of work
 */
+/*
 void testPowFunction(uint8_t *mess, uint32_t messLen, const int64_t iterNum) {
 	int64_t j;
 
@@ -269,7 +465,7 @@ void testPowFunction(uint8_t *mess, uint32_t messLen, const int64_t iterNum) {
 		Maddr = NULL;
 	}
 }
-
+*/
 
 #define OUTPUT_BUFFER_SIZE	(32 * 1024UL * 1024UL)
 #define MAX_TEST_INPUT_LEN		140
@@ -345,3 +541,4 @@ void powNistTest(const char *outFileName) {
 		Maddr = NULL;
 	}
 }
+
